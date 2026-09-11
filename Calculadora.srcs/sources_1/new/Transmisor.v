@@ -20,48 +20,104 @@
 //////////////////////////////////////////////////////////////////////////////////
 
 
-module Transmisor(
-    input wire [7:0] data,
-    input wire clk,
-    input wire rst,
-    output reg tx_ready,
-    output reg resp
+module Transmisor //maquina de estados igual a la del receptor, lo que cambia es la logica del estado de recepcion, que en este caso se llama transmision
+    (
+        input clk,               // basys 3 FPGA
+        input rst,                    // rst
+        input tx_en,                 // begin data transmission (FIFO NOT empty)
+        input tick,              // from baud rate generator
+        input [7:0] resultado,      // data word from FIFO
+        output TxD                       // transmitter data line
     );
     
-    reg [3:0] cont_tx;
-    reg [7:0] datos_tx;
+    // State Machine States
+    localparam [1:0]    idle  = 2'b00,
+                        start = 2'b01,
+                        transmision  = 2'b10,
+                        stop  = 2'b11;
     
-    //Inicialización
-    initial begin
-    cont_tx <= 0;
-    datos_tx <= 0;
-    tx_ready <= 0;
-    resp <= 1;
-    end
+    // Registers                    
+    reg [1:0] estado, sig_estado;            // estado registers
+    reg [3:0] tick_reg, tick_sig;          // number of ticks received from baud rate generator
+    reg [2:0] nbits_reg, nbits_sig;        // number of bits transmitted in data estado
+    reg [7:0] data_reg, data_sig;    // assembled data word to transmit serially
+    reg TxD_reg, TxD_sig;                    // data filter for potential glitches
     
-  //Máquina de estados
-    always @(posedge clk) begin
-    if (rst) begin
-        cont_tx <= 0;
-        datos_tx <= 0;
-        tx_ready <= 1;
-        resp <= 1;
-    end else if (tx_ready) 
-    begin
-        datos_tx <= data;
-        tx_ready <= 0;
-        resp <= 0;
-        cont_tx <= 0;
-    end else if (cont_tx < 8) begin
-        cont_tx <= cont_tx + 1;
-    end else begin
-        cont_tx <= 0;
-        datos_tx <= datos_tx << 1;
-        resp <= datos_tx[7];
-        if (cont_tx == 7) begin
-            tx_ready <=1;
+    // Register Logic
+    always @(posedge clk, posedge rst)
+        if(rst) begin
+            estado <= idle;
+            tick_reg <= 0;
+            nbits_reg <= 0;
+            data_reg <= 0;
+            TxD_reg <= 1'b1;
         end
+        else begin
+            estado <= sig_estado;
+            tick_reg <= tick_sig;
+            nbits_reg <= nbits_sig;
+            data_reg <= data_sig;
+            TxD_reg <= TxD_sig;
+        end
+    
+    // estado Machine Logic
+    always @* begin
+        sig_estado = estado;
+        tick_sig = tick_reg;
+        nbits_sig = nbits_reg;
+        data_sig = data_reg;
+        TxD_sig = TxD_reg;
+        
+        case(estado)
+            idle: begin                  
+                TxD_sig = 1'b1;            
+                if(tx_en) begin          
+                    sig_estado = start;
+                    tick_sig = 0;
+                    data_sig = resultado;
+                end
+            end
+            
+            start: begin
+                TxD_sig = 1'b0; //bit de inicio siempre debe de ser 0
+                if(tick)
+                    if(tick_reg == 15) begin
+                        sig_estado = transmision;
+                        tick_sig = 0;
+                        nbits_sig = 0;
+                    end
+                    else
+                        tick_sig = tick_reg + 1;
+            end
+            
+            transmision: begin
+                TxD_sig = data_reg[0];
+                if(tick)
+                    if(tick_reg == 15) begin
+                        tick_sig = 0;
+                        data_sig = data_reg >> 1; //se va separando bit por bit
+                        if(nbits_reg == (7))
+                            sig_estado = stop;
+                        else
+                            nbits_sig = nbits_reg + 1;
+                    end
+                    else
+                        tick_sig = tick_reg + 1;
+            end
+            
+            stop: begin
+                TxD_sig = 1'b1;       
+                if(tick)
+                    if(tick_reg == (15)) begin
+                        sig_estado = idle;
+                        sig_estado = idle;
+                    end
+                    else
+                        tick_sig = tick_reg + 1;
+            end
+        endcase    
     end
-end
-
+    
+    assign TxD = TxD_reg;
+ 
 endmodule

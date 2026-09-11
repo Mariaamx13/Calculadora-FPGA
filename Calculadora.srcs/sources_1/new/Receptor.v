@@ -18,92 +18,90 @@
 // Additional Comments:
 // 
 //////////////////////////////////////////////////////////////////////////////////
-
-
-module Receptor(
-  input clk, 
-  input rst,
-  input RxD, //input
-  output [7:0] datos_rx 
-);
-
-    reg shift; // "bandera" para el shifting de los datos (o sea que vaya bit por bit)
-    reg estado, s_estado; 
-    reg [3:0] cont_bit; //para contar que hayan 10 bits
-    reg [1:0] cont_muestras; //
-    reg [13:0] cont_baudrate;// 2^14= 16384  2^13= 8192
-    reg [9:0] rxshift_reg; //datos (1 bit de inicio, 1 bit final)
-    reg clear_bitcounter, inc_bitcounter, inc_samplecounter, clear_samplecounter; //limpia e incrementa cont_bit  y cont_muestras
-
-    parameter clk_freq = 100_000_000;
-    parameter baud_rate = 9_600;
-    parameter div_muestra = 4; //es cuatro porque se incrementa la frecuencia 4 veces el baudrate 9600^3 < 100M, se asegura que el receptor y transmisor estén sincronizados.
-    parameter div_cont = clk_freq/(baud_rate*div_muestra); //frecuencia a la que hay que dividir la frecuencia de reloj del sistema para conseguir una frecuencia (div_muestra) veces más alta que el baudrate
-    parameter mid_muestra = (div_muestra/2); //este es el punto medio de un bit donde desea muestrear los datos
-    parameter div_bit = 10; 
+module Receptor
+    (
+        input clk,              //input de la FPGA
+        input rst,              //reset
+        input RxD,              //input RxD, es de 1 solo bit, secuencial.         
+        input tick,             //
+        output reg rx_ready,    //tick para avisarle al módulo de registro que ya el dato está listo para shiftearse y guardarse.      
+        output [7:0] datos_rx   //dato paralelo  
+    );
     
-    assign datos_rx = rxshift_reg [8:1]; // se asigna el dato que se va a recibir del registro de shift, se pone 8:1 porque hay 1 bit de inicio y 1 bit final
-
-//Logica del receptor
-always @(posedge clk) 
-    begin
-    if (rst) begin // si se presiona rst, todos los contadores se resetean (todo se pone en 0)
-        estado <= 0;
-        cont_bit <= 0;
-        cont_baudrate <= 0;
-        cont_muestras <=0;
+    localparam [1:0] idle  = 2'b00, //se definen los estados para la máquina de estados
+                     inicio = 2'b01,
+                     recepcion  = 2'b10,
+                     parada  = 2'b11;
+    
+    // Registers                 
+    reg [1:0] estado, sig_estado;  //estado almacena el estado actual de la máquina y sig_estado se actualiza según el valor de estado y determina el siguiente estado
+    reg [3:0] tick_reg, tick_sig;  //guarda el valor del contador de ticks en el ciclo de reloj actual, tick_sig guarda el valor de tick_reg en el siguiente 
+                                   //ciclo de reloj, esto permite que tick se mantenga durante clk (tick_sig = tick_reg)
+    reg [2:0] nbits_reg, nbits_sig;  //nbits_reg es un contador de los bits recibidos
+    reg [7:0] data_reg, data_sig;    //registro del dato recibido 
+    
+    //logica de los registros para el funcionamiento de la maquina de estados
+    always @(posedge clk, posedge rst)
+        if(rst) begin //si se activa, se coloca en idle y se reinician los valores
+            estado <= idle;
+            tick_reg <= 0;
+            nbits_reg <= 0;
+            data_reg <= 0;
         end
-        else begin
-        cont_baudrate <= cont_baudrate +1; //el contador de baudrate aumenta +1, o sea este ciclo se repite 9600 veces
-        if (cont_baudrate >= div_cont-1) // si el contador alcanza 9600
-            begin
-            cont_baudrate <= 0; // se resetea el contador, o sea vuelve a 0
-            estado <= s_estado; // se mueve al siguiente estado, estando listo para recibir datos o volver a IDLE
-            if (shift)rxshift_reg <= {RxD, rxshift_reg[9:1]}; // si se activa shift, se cargan los datos recibidos
-            if (clear_samplecounter) cont_muestras <=0; //si se activa este clear, se resetea el contador de muestras
-            if (inc_samplecounter) cont_muestras <= cont_muestras + 1; // si se activa inc_samplecounter, se incrementa +1
-            if (clear_bitcounter) cont_bit <= 0; //si se activa, se limpia a si mismo
-            if (inc_bitcounter) cont_bit <= cont_bit +1; ////si se activa, se aumenta +1
-            end
-        end 
-    end  
-//Maquina de estados finitos
+        else begin //si rst no se activa, se guardan los valores en los reg _sig
+            estado <= sig_estado;
+            tick_reg <= tick_sig;
+            nbits_reg <= nbits_sig;
+            data_reg <= data_sig;
+        end        
 
-always @(posedge clk)
-begin 
-    shift <= 0; // se pone en 0 para evitar shifting, está en idle
-    clear_samplecounter <= 0; 
-    inc_samplecounter <= 0;
-    clear_bitcounter <= 0;
-    inc_bitcounter <=0;
-    s_estado <= 0; //idle
-    case (estado)
-        0: begin //ESTADO IDLE
-        if (RxD) // si se activa el input RxD
-        begin
-            s_estado <= 0; // no cambia de estado, queda en idle. Esto porque RxD ocupa estar en 0 para iniciar la transmisión
-        end
-        else begin
-            s_estado <= 1; //va a empezar a recibir datos
-            clear_bitcounter <= 1; //se activa y limpia el contador de bits
-            clear_samplecounter <= 1; // se activa y limpia el contador de muestras           
-            end
-        end
-        1: begin // Estado de recepción
-        s_estado <= 1;
-        if (cont_muestras == mid_muestra -1) shift <= 1; //si el contador es 1, se activa el "movimiento" de datos
-            if (cont_muestras == div_muestra -1) begin // si el contador es 3, ya que el ratio de la muestra es de 4 (que es 3)
-                if (cont_bit == div_bit -1) begin // revisa si el contador de bits es 9 (o sea 10) y si es así, es que se recibieron todos los bits y el próximo estado es IDLE
-            s_estado <= 0;
-            end
-            inc_bitcounter <= 1; // si cont_bit no es 9, se activa inc_bitcounter
-            clear_samplecounter <= 1; // se activa este clear para limpiar el contador de muestras
-         end else 
-         inc_samplecounter <= 1; // si el contador de muestra no es 4, necesita ser incrementado
-         end
-         default: s_estado <= 0; //queda en IDLE
-         endcase
-     end 
-endmodule     
+    // Maquina de estados
+    always @* begin //se asignan los valores del flanco de reloj pasado a la señal actual.
+        sig_estado = estado;
+        rx_ready = 1'b0; //importante, el dato todavía no está listo, por lo que se mantiene en 0
+        tick_sig = tick_reg;
+        nbits_sig = nbits_reg;
+        data_sig = data_reg;
+        
+        case(estado)
+            idle:
+                if(~RxD) begin       //el bit de inicio siempre es 0, por lo que se niega el condicional      
+                    sig_estado = inicio; //el proximo estado es de inicio
+                    tick_sig = 0; // se reinicia el contador de ticks para empezar a contar los datos
+                end
+            inicio:
+                if(tick) 
+                    if(tick_reg == 7) begin //se debe de esperar a que el contador de ticks llegue a 7 para que confirmar que RxD se mantuvo en 1 por 8 flancos, o sea, llego un dato.
+                        sig_estado = recepcion; //al llegar un dato, se coloca el proximo estado en recepcion
+                        tick_sig = 0; // se reinician ambos contadores
+                        nbits_sig = 0;
+                    end
+                    else
+                        tick_sig = tick_reg + 1; // se suma +1 cada que RxD cambie, hasta llegar a 7
+            recepcion:
+                if(tick)
+                    if(tick_reg == 15) begin
+                        tick_sig = 0;
+                        data_sig = {RxD, data_reg[7:1]};
+                        if(nbits_reg == (7))
+                            sig_estado = parada;
+                        else
+                            nbits_sig = nbits_reg + 1;
+                    end
+                    else 
+                        tick_sig = tick_reg + 1; //misma logica que el estado de inicio, solo que 
+            parada:
+                if(tick)
+                    if(tick_reg == (15)) begin
+                        sig_estado = idle;
+                        rx_ready = 1'b1; //el dato está listo
+                    end
+                    else
+                        tick_sig = tick_reg + 1;
+        endcase                    
+    end
+    
+    assign datos_rx = data_reg;
+    
 
-
+endmodule

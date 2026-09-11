@@ -20,38 +20,79 @@
 //////////////////////////////////////////////////////////////////////////////////
 
 
-module top(
-    input clk,
-    input rst,
-    input RxD
+module top
+(
+	input clk,
+	input rst,
+	input RxD,
+	output [7:0] LED1,
+	output desb,
+	output TxD
+	);
+	
+	wire tick;
+	wire rx_done_tick; 
+	wire mux_ready;
+	wire mux_ready_fix;
+	wire tx_done_tick; 
+	wire BD;
+	
+	wire [7:0] op, num1, num2, resultado;
+	wire [7:0] datos_rx;
+	
+	assign LED1 = resultado;
+	assign desb = BD;
+	
+baudrate_gen generador(
+	
+	.clk(clk), 
+    .rst(rst),
+    .tick(tick)
+    );
+	
+Receptor receptor_uart(
+            .clk(clk),
+            .rst(rst),
+            .RxD(RxD),
+            .tick(tick),
+            .rx_ready(rx_done_tick),
+            .datos_rx(datos_rx)
+         );
 
-    );
-    
-    wire [7:0] datos_rx;
-    wire write_en;
-    wire [1:0] direc;
-    wire [7:0] data_out_0;
-    wire [7:0] data_out_1;
-    wire [7:0] data_out_2;
-    
-    assign direc = 2'b00;
-    assign write_en = |{datos_rx};
-      
-    Receptor receptorUART(
-        .clk(clk),
-        .rst(rst),
-        .RxD(RxD),
-        .datos_rx(datos_rx)
-    );
-    
-    flipflop memoria(
-        .clk(clk),
-        .datoRx(datos_rx),
-        .write_en(write_en),
-        .direc(direc),
-        .data_out_0(data_out_0),
-        .data_out_1(data_out_1),
-        .data_out_2(data_out_2)
-    );
-    
+
+shiftregister SIPO(
+    .clk(clk),
+    .rst(rst),
+    .en(rx_done_tick),
+    .din(datos_rx),
+    .reg1(op), // puente
+    .reg2(num2),
+    .reg3(num1)
+);  
+Multiplexor Calculo_Operaciones(
+.A(num1),
+.B(num2),
+.sel(datos_rx),
+.resultado(resultado),
+.mux_ready(mux_ready),
+.desbordamiento(BD)
+
+);
+
+FF_Calc mux_ready_rx(
+.clk(clk),
+.calc_ready(mux_ready),
+.fix_ready(mux_ready_fix)
+);
+
+Transmisor TransmisorUART(
+.clk(clk),
+.rst(rst),
+.tx_en(mux_ready_fix),
+.tick(tick),
+.resultado(resultado),
+.TxD(TxD));
+
+
+
 endmodule
